@@ -39,6 +39,168 @@ import ReactMarkdown from "react-markdown";
 import { motion, AnimatePresence } from "motion/react";
 import { marked } from "marked";
 
+// Helper to find or create a WordPress category
+async function findOrCreateCategory(wpUrl: string, authHeader: string, categoryName: string): Promise<number | null> {
+  if (!wpUrl) return null;
+  const name = categoryName.trim();
+  if (!name) return null;
+
+  try {
+    const cleanUrl = wpUrl.replace(/\/$/, "");
+    // 1. Search for existing category (fuzzy search parameter, then exact match check)
+    const searchUrl = `${cleanUrl}/wp-json/wp/v2/categories?search=${encodeURIComponent(name)}`;
+    const searchRes = await fetch(searchUrl, {
+      method: "GET",
+      headers: { "Authorization": authHeader }
+    });
+    
+    if (searchRes.ok) {
+      const categories = await searchRes.json();
+      if (Array.isArray(categories)) {
+        const found = categories.find(c => c.name.toLowerCase() === name.toLowerCase());
+        if (found) {
+          console.log(`Category found: "${name}" with ID: ${found.id}`);
+          return found.id;
+        }
+      }
+    }
+
+    // 2. Draft/create category if not found
+    console.log(`Creating category: "${name}"...`);
+    const createUrl = `${cleanUrl}/wp-json/wp/v2/categories`;
+    const createRes = await fetch(createUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": authHeader
+      },
+      body: JSON.stringify({ name: name })
+    });
+
+    if (createRes.ok) {
+      const newCat = await createRes.json();
+      console.log(`Category created successfully: "${name}" with ID: ${newCat.id}`);
+      return newCat.id;
+    } else {
+      const errData = await createRes.json().catch(() => ({}));
+      if (errData.code === "term_exists" || errData.error === "term_exists" || (errData.data && errData.data.term_id)) {
+        const existingId = errData.term_id || errData.data?.term_id;
+        console.log(`Category "${name}" already exists on server, using ID: ${existingId}`);
+        return existingId;
+      }
+      
+      // Fallback search
+      const listUrl = `${cleanUrl}/wp-json/wp/v2/categories?per_page=100`;
+      const listRes = await fetch(listUrl, {
+        method: "GET",
+        headers: { "Authorization": authHeader }
+      });
+      if (listRes.ok) {
+        const categories = await listRes.json();
+        if (Array.isArray(categories)) {
+          const found = categories.find(c => c.name.toLowerCase() === name.toLowerCase());
+          if (found) {
+            console.log(`Category fallback found: "${name}" with ID: ${found.id}`);
+            return found.id;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`Error in findOrCreateCategory for "${name}":`, err);
+  }
+  return null;
+}
+
+// Helper to find or create a WordPress tag
+async function findOrCreateTag(wpUrl: string, authHeader: string, tagName: string): Promise<number | null> {
+  if (!wpUrl) return null;
+  const name = tagName.trim();
+  if (!name) return null;
+
+  try {
+    const cleanUrl = wpUrl.replace(/\/$/, "");
+    // 1. Search for existing tag
+    const searchUrl = `${cleanUrl}/wp-json/wp/v2/tags?search=${encodeURIComponent(name)}`;
+    const searchRes = await fetch(searchUrl, {
+      method: "GET",
+      headers: { "Authorization": authHeader }
+    });
+    
+    if (searchRes.ok) {
+      const tags = await searchRes.json();
+      if (Array.isArray(tags)) {
+        const found = tags.find(t => t.name.toLowerCase() === name.toLowerCase());
+        if (found) {
+          console.log(`Tag found: "${name}" with ID: ${found.id}`);
+          return found.id;
+        }
+      }
+    }
+
+    // 2. Draft/create tag if not found
+    console.log(`Creating tag: "${name}"...`);
+    const createUrl = `${cleanUrl}/wp-json/wp/v2/tags`;
+    const createRes = await fetch(createUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": authHeader
+      },
+      body: JSON.stringify({ name: name })
+    });
+
+    if (createRes.ok) {
+      const newTag = await createRes.json();
+      console.log(`Tag created successfully: "${name}" with ID: ${newTag.id}`);
+      return newTag.id;
+    } else {
+      const errData = await createRes.json().catch(() => ({}));
+      if (errData.code === "term_exists" || errData.error === "term_exists" || (errData.data && errData.data.term_id)) {
+        const existingId = errData.term_id || errData.data?.term_id;
+        console.log(`Tag "${name}" already exists on server, using ID: ${existingId}`);
+        return existingId;
+      }
+
+      // Fallback search listing
+      const listUrl = `${cleanUrl}/wp-json/wp/v2/tags?per_page=100`;
+      const listRes = await fetch(listUrl, {
+        method: "GET",
+        headers: { "Authorization": authHeader }
+      });
+      if (listRes.ok) {
+        const tags = await listRes.json();
+        if (Array.isArray(tags)) {
+          const found = tags.find(t => t.name.toLowerCase() === name.toLowerCase());
+          if (found) {
+            console.log(`Tag fallback found: "${name}" with ID: ${found.id}`);
+            return found.id;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`Error in findOrCreateTag for "${name}":`, err);
+  }
+  return null;
+}
+
+// Resolve comma-separated tags into IDs
+async function resolveTags(wpUrl: string, authHeader: string, tagsString: string): Promise<number[]> {
+  if (!tagsString) return [];
+  const tagNames = tagsString.split(",").map(t => t.trim()).filter(Boolean);
+  if (tagNames.length === 0) return [];
+
+  const tagIds: number[] = [];
+  for (const tagName of tagNames) {
+    const id = await findOrCreateTag(wpUrl, authHeader, tagName);
+    if (id !== null) {
+      tagIds.push(id);
+    }
+  }
+  return tagIds;
+}
+
 export default function App() {
   const [formData, setFormData] = useState<ArticleFormData>(() => {
     const savedSheetName = typeof window !== 'undefined' ? localStorage.getItem("autopilot_post_sheet_name") : null;
@@ -50,9 +212,9 @@ export default function App() {
       urlArtikelPilar: "",
       kategori: "",
       tag: "",
-      wp_url: "",
-      wp_username: "",
-      wp_app_password: "",
+      wp_url: "https://primatex.co.id/",
+      wp_username: "Mahadi",
+      wp_app_password: "AePE hTgC 4rgG 16HO zVNa uZ8I",
       row: undefined,
       sheetName: savedSheetName || "",
     };
@@ -66,9 +228,9 @@ export default function App() {
     urlArtikelPilar: "",
     kategori: "",
     tag: "",
-    wp_url: "",
-    wp_username: "",
-    wp_app_password: "",
+    wp_url: "https://primatex.co.id/",
+    wp_username: "Mahadi",
+    wp_app_password: "AePE hTgC 4rgG 16HO zVNa uZ8I",
     row: undefined,
     sheetName: "", // Fallback, will be overridden by prev state in setFormData
     judul: "",
@@ -189,24 +351,52 @@ export default function App() {
       const wpApiUrl = `${dataToUse.wp_url.replace(/\/$/, '')}/wp-json/wp/v2/posts`;
       const authHeader = `Basic ${btoa(`${dataToUse.wp_username}:${dataToUse.wp_app_password}`)}`;
 
+      // Resolve Category IDs
+      const categoryIds: number[] = [];
+      const categoryStr = metaData.kategori || dataToUse.kategori || "";
+      if (categoryStr) {
+        const catNames = categoryStr.split(",").map((c: string) => c.trim()).filter(Boolean);
+        for (const catName of catNames) {
+          const catId = await findOrCreateCategory(dataToUse.wp_url, authHeader, catName);
+          if (catId) {
+            categoryIds.push(catId);
+          }
+        }
+      }
+
+      // Resolve Tag IDs
+      const tagIds = await resolveTags(dataToUse.wp_url, authHeader, metaData.tag || dataToUse.tag || "");
+
+      console.log(`Resolved Taxonomies - Categories: ${JSON.stringify(categoryIds)}, Tags: ${JSON.stringify(tagIds)}`);
+
+      // Build payload including resolved category and tag IDs
+      const postPayload: any = {
+        title: metaData.judul,
+        content: content,
+        excerpt: metaData.kutipan,
+        slug: metaData.slug,
+        status: 'draft',
+        meta: {
+          _yoast_wpseo_focuskw: metaData.frasa_kunci,
+          _yoast_wpseo_metadesc: metaData.meta_deskripsi,
+          _yoast_wpseo_title: metaData.judul_seo,
+        }
+      };
+
+      if (categoryIds.length > 0) {
+        postPayload.categories = categoryIds;
+      }
+      if (tagIds.length > 0) {
+        postPayload.tags = tagIds;
+      }
+
       const response = await fetch(wpApiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": authHeader
         },
-        body: JSON.stringify({
-          title: metaData.judul,
-          content: content,
-          excerpt: metaData.kutipan,
-          slug: metaData.slug,
-          status: 'draft',
-          meta: {
-            _yoast_wpseo_focuskw: metaData.frasa_kunci,
-            _yoast_wpseo_metadesc: metaData.meta_deskripsi,
-            _yoast_wpseo_title: metaData.judul_seo,
-          }
-        })
+        body: JSON.stringify(postPayload)
       });
 
       if (!response.ok) {
@@ -1150,7 +1340,7 @@ export default function App() {
                         <ScrollArea className="flex-1 h-[calc(100vh-320px)] bg-background">
                           <TabsContent value="preview" className="p-8 m-0 space-y-12">
                             {/* Article Section */}
-                            <div className="bg-card rounded-2xl shadow-xl border-2 border-primary/10 p-5 prose prose-invert prose-blue max-w-none prose-headings:font-black prose-h1:text-2xl prose-h1:tracking-tighter prose-h2:text-lg prose-h2:mt-6 prose-h2:mb-3 prose-h2:border-b-2 prose-h2:pb-2 prose-h2:border-primary/20 prose-h3:text-base prose-p:text-foreground/80 prose-p:leading-relaxed prose-p:text-sm prose-a:text-primary prose-a:font-bold hover:prose-a:text-primary/80 transition-colors">
+                            <div className="bg-card rounded-2xl shadow-xl border-2 border-primary/10 p-6 prose prose-invert prose-blue max-w-none prose-headings:font-black prose-h1:text-2xl prose-h1:tracking-tighter prose-h2:text-lg prose-h2:mt-6 prose-h2:mb-3 prose-h2:border-b-2 prose-h2:pb-2 prose-h2:border-primary/20 prose-h3:text-base prose-p:text-sm prose-p:leading-relaxed prose-a:text-primary prose-a:font-bold hover:prose-a:text-primary/80 transition-colors">
                               <ReactMarkdown>{result.split("---SEO-DATA-START---")[0]}</ReactMarkdown>
                             </div>
 
